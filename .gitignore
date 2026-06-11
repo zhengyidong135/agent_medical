@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+rag_store/
+patient_store/
+_gt_couinaud_link/
+*.dcm
+*.dicom
+*.nii
+*.nii.gz
+node_modules/
+frontend/node_modules/
+frontend/dist/

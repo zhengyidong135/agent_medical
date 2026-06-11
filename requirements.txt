@@ -1,0 +1,7 @@
+pypdf
+python-docx
+pydicom
+numpy
+Pillow
+nibabel
+TotalSegmentator
