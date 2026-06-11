@@ -1171,11 +1171,7 @@ export default {
       }
       const job = data.job || {};
       const backendProgress = Number(job.progress || 0);
-      if (job.status === "running") {
-        this.segmentationProgress = Math.min(95, Math.max(backendProgress, this.segmentationProgress + 3));
-      } else {
-        this.segmentationProgress = backendProgress;
-      }
+      this.segmentationProgress = backendProgress;
       this.segmentationJobMessage = job.message || "";
       if (job.status === "done") {
         return job.result;

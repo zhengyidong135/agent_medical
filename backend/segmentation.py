@@ -8,7 +8,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from config import PATIENT_NII_DIR
 from nii import add_generated_nii_label, get_nii_item, nii_image_path
@@ -252,10 +252,22 @@ def start_totalsegmentator_job(file_id: str, part_key: str, device_id: str = "cp
     return _job_snapshot(job_id)
 
 
+def _format_elapsed(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    remain = int(seconds % 60)
+    if minutes <= 0:
+        return f"{remain} 秒"
+    return f"{minutes} 分 {remain} 秒"
+
+
 def _run_totalsegmentator_job(job_id: str, file_id: str, part_key: str, device_id: str) -> None:
     try:
-        _update_job(job_id, status="running", progress=15, message="TotalSegmentator 正在运行")
-        result = run_totalsegmentator(file_id, part_key, device_id=device_id)
+        _update_job(job_id, status="running", progress=15, message=f"TotalSegmentator 正在运行，设备：{device_id}")
+
+        def on_progress(progress: int, message: str) -> None:
+            _update_job(job_id, status="running", progress=progress, message=message)
+
+        result = run_totalsegmentator(file_id, part_key, device_id=device_id, progress_callback=on_progress)
         _update_job(job_id, status="done", progress=100, message="分割完成", result=result)
     except Exception as exc:
         _update_job(job_id, status="error", progress=100, message=str(exc), error=str(exc))
@@ -266,6 +278,7 @@ def run_totalsegmentator(
     part_key: str,
     timeout_seconds: int = 1800,
     device_id: str = "cpu",
+    progress_callback: Callable[[int, str], None] | None = None,
 ) -> dict[str, Any]:
     part = _part_config(part_key)
     command = _totalsegmentator_command()
@@ -298,17 +311,39 @@ def run_totalsegmentator(
         else:
             cmd.extend(["--device", "cpu"])
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-            env=env,
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()
-            raise ValueError(f"TotalSegmentator 分割失败：{detail or result.returncode}")
+        stdout_path = Path(temp_dir) / "totalsegmentator.stdout.log"
+        stderr_path = Path(temp_dir) / "totalsegmentator.stderr.log"
+        start_time = time.time()
+        with stdout_path.open("w", encoding="utf-8", errors="replace") as stdout_file, stderr_path.open(
+            "w",
+            encoding="utf-8",
+            errors="replace",
+        ) as stderr_file:
+            process = subprocess.Popen(
+                cmd,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+                env=env,
+            )
+            while True:
+                return_code = process.poll()
+                elapsed = time.time() - start_time
+                if return_code is not None:
+                    break
+                if elapsed > timeout_seconds:
+                    process.kill()
+                    raise ValueError(f"TotalSegmentator 分割超时，已运行 {_format_elapsed(elapsed)}。")
+                if progress_callback:
+                    progress = min(95, 20 + int((elapsed / timeout_seconds) * 70))
+                    progress_callback(progress, f"TotalSegmentator 正在运行，设备：{device_id}，已用 {_format_elapsed(elapsed)}")
+                time.sleep(5)
+
+        stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace").strip()
+        stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace").strip()
+        if process.returncode != 0:
+            detail = (stderr_text or stdout_text or "").strip()
+            raise ValueError(f"TotalSegmentator 分割失败：{detail or process.returncode}")
 
         mask_paths = [output_dir / f"{roi}.nii.gz" for roi in roi_subset if (output_dir / f"{roi}.nii.gz").exists()]
         if not mask_paths:
