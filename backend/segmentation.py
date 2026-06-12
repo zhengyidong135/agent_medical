@@ -18,7 +18,7 @@ SEGMENTATION_JOBS: dict[str, dict[str, Any]] = {}
 SEGMENTATION_JOBS_LOCK = threading.Lock()
 
 
-TOTALSEGMENTATOR_PARTS: list[dict[str, Any]] = [
+TOTALSEGMENTATOR_CT_PARTS: list[dict[str, Any]] = [
     {"key": "liver", "name": "肝脏", "task": "total", "roi_subset": ["liver"]},
     {"key": "spleen", "name": "脾脏", "task": "total", "roi_subset": ["spleen"]},
     {"key": "kidney", "name": "肾脏", "task": "total", "roi_subset": ["kidney_left", "kidney_right"]},
@@ -62,8 +62,34 @@ TOTALSEGMENTATOR_PARTS: list[dict[str, Any]] = [
 ]
 
 
-def _part_config(part_key: str) -> dict[str, Any]:
-    part = next((entry for entry in TOTALSEGMENTATOR_PARTS if entry["key"] == part_key), None)
+TOTALSEGMENTATOR_MRI_PARTS: list[dict[str, Any]] = [
+    {"key": "all", "name": "MRI全器官", "task": "total_mr", "roi_subset": []},
+    {"key": "liver", "name": "肝脏", "task": "total_mr", "roi_subset": ["liver"]},
+    {"key": "spleen", "name": "脾脏", "task": "total_mr", "roi_subset": ["spleen"]},
+    {"key": "kidney", "name": "肾脏", "task": "total_mr", "roi_subset": ["kidney_left", "kidney_right"]},
+    {"key": "lung", "name": "肺", "task": "total_mr", "roi_subset": ["lung_left", "lung_right"]},
+    {"key": "heart", "name": "心脏", "task": "total_mr", "roi_subset": ["heart"]},
+    {"key": "pancreas", "name": "胰腺", "task": "total_mr", "roi_subset": ["pancreas"]},
+    {"key": "stomach", "name": "胃", "task": "total_mr", "roi_subset": ["stomach"]},
+]
+
+
+TOTALSEGMENTATOR_PARTS = TOTALSEGMENTATOR_CT_PARTS
+
+
+def normalize_modality(modality: str | None) -> str:
+    value = (modality or "ct").strip().lower()
+    if value not in {"ct", "mri"}:
+        raise ValueError("图像类型只能选择 CT 或 MRI。")
+    return value
+
+
+def totalsegmentator_parts(modality: str | None = "ct") -> list[dict[str, Any]]:
+    return TOTALSEGMENTATOR_MRI_PARTS if normalize_modality(modality) == "mri" else TOTALSEGMENTATOR_CT_PARTS
+
+
+def _part_config(part_key: str, modality: str | None = "ct") -> dict[str, Any]:
+    part = next((entry for entry in totalsegmentator_parts(modality) if entry["key"] == part_key), None)
     if not part:
         raise ValueError("请选择有效的分割部位。")
     return part
@@ -227,12 +253,19 @@ def get_segmentation_job(job_id: str) -> dict[str, Any]:
     return _job_snapshot(job_id)
 
 
-def start_totalsegmentator_job(file_id: str, part_key: str, device_id: str = "cpu") -> dict[str, Any]:
+def start_totalsegmentator_job(
+    file_id: str,
+    part_key: str,
+    device_id: str = "cpu",
+    modality: str = "ct",
+) -> dict[str, Any]:
+    modality = normalize_modality(modality)
     job_id = uuid.uuid4().hex
     job = {
         "id": job_id,
         "file_id": file_id,
         "part": part_key,
+        "modality": modality,
         "device": device_id,
         "status": "queued",
         "progress": 5,
@@ -245,7 +278,7 @@ def start_totalsegmentator_job(file_id: str, part_key: str, device_id: str = "cp
 
     thread = threading.Thread(
         target=_run_totalsegmentator_job,
-        args=(job_id, file_id, part_key, device_id),
+        args=(job_id, file_id, part_key, device_id, modality),
         daemon=True,
     )
     thread.start()
@@ -260,14 +293,20 @@ def _format_elapsed(seconds: float) -> str:
     return f"{minutes} 分 {remain} 秒"
 
 
-def _run_totalsegmentator_job(job_id: str, file_id: str, part_key: str, device_id: str) -> None:
+def _run_totalsegmentator_job(job_id: str, file_id: str, part_key: str, device_id: str, modality: str) -> None:
     try:
-        _update_job(job_id, status="running", progress=15, message=f"TotalSegmentator 正在运行，设备：{device_id}")
+        _update_job(job_id, status="running", progress=15, message=f"TotalSegmentator 正在运行，类型：{modality.upper()}，设备：{device_id}")
 
         def on_progress(progress: int, message: str) -> None:
             _update_job(job_id, status="running", progress=progress, message=message)
 
-        result = run_totalsegmentator(file_id, part_key, device_id=device_id, progress_callback=on_progress)
+        result = run_totalsegmentator(
+            file_id,
+            part_key,
+            device_id=device_id,
+            modality=modality,
+            progress_callback=on_progress,
+        )
         _update_job(job_id, status="done", progress=100, message="分割完成", result=result)
     except Exception as exc:
         _update_job(job_id, status="error", progress=100, message=str(exc), error=str(exc))
@@ -278,9 +317,11 @@ def run_totalsegmentator(
     part_key: str,
     timeout_seconds: int = 1800,
     device_id: str = "cpu",
+    modality: str = "ct",
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> dict[str, Any]:
-    part = _part_config(part_key)
+    modality = normalize_modality(modality)
+    part = _part_config(part_key, modality)
     command = _totalsegmentator_command()
     item = get_nii_item(file_id)
     item_dir = PATIENT_NII_DIR / file_id
@@ -336,7 +377,7 @@ def run_totalsegmentator(
                     raise ValueError(f"TotalSegmentator 分割超时，已运行 {_format_elapsed(elapsed)}。")
                 if progress_callback:
                     progress = min(95, 20 + int((elapsed / timeout_seconds) * 70))
-                    progress_callback(progress, f"TotalSegmentator 正在运行，设备：{device_id}，已用 {_format_elapsed(elapsed)}")
+                    progress_callback(progress, f"TotalSegmentator 正在运行，类型：{modality.upper()}，设备：{device_id}，已用 {_format_elapsed(elapsed)}")
                 time.sleep(5)
 
         stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace").strip()
@@ -352,6 +393,6 @@ def run_totalsegmentator(
         combined_path = Path(temp_dir) / label_filename
         _combine_masks(mask_paths, combined_path)
 
-        updated_item = add_generated_nii_label(file_id, combined_path, f"TotalSegmentator-{part['name']}", part["name"])
+        updated_item = add_generated_nii_label(file_id, combined_path, f"TotalSegmentator-{modality.upper()}-{part['name']}", part["name"])
         label = (updated_item.get("labels") or [])[-1] if updated_item.get("labels") else None
-        return {"item": updated_item, "label": label, "part": part}
+        return {"item": updated_item, "label": label, "part": part, "modality": modality}

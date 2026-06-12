@@ -48,6 +48,7 @@ from segmentation import (
     get_segmentation_job,
     run_totalsegmentator,
     start_totalsegmentator_job,
+    totalsegmentator_parts,
 )
 
 class Handler(SimpleHTTPRequestHandler):
@@ -82,6 +83,11 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if self.path == "/api/segmentation/totalsegmentator/parts":
             self.send_json({"parts": TOTALSEGMENTATOR_PARTS})
+            return
+        if self.path.startswith("/api/segmentation/totalsegmentator/parts?"):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            modality = query.get("modality", ["ct"])[0]
+            self.send_json({"parts": totalsegmentator_parts(modality), "modality": modality})
             return
         if self.path == "/api/segmentation/devices":
             self.send_json(detect_segmentation_devices())
@@ -314,7 +320,12 @@ class Handler(SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length).decode("utf-8")
             data = json.loads(body or "{}")
-            result = run_totalsegmentator(file_id, data.get("part", "liver"), device_id=data.get("device", "cpu"))
+            result = run_totalsegmentator(
+                file_id,
+                data.get("part", "liver"),
+                device_id=data.get("device", "cpu"),
+                modality=data.get("modality", "ct"),
+            )
             self.send_json(result)
         except Exception as exc:  # noqa: BLE001
             self.send_json({"error": str(exc)}, status=500)
@@ -330,7 +341,12 @@ class Handler(SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length).decode("utf-8")
             data = json.loads(body or "{}")
-            job = start_totalsegmentator_job(file_id, data.get("part", "liver"), data.get("device", "cpu"))
+            job = start_totalsegmentator_job(
+                file_id,
+                data.get("part", "liver"),
+                data.get("device", "cpu"),
+                data.get("modality", "ct"),
+            )
             self.send_json({"job": job})
         except Exception as exc:  # noqa: BLE001
             self.send_json({"error": str(exc)}, status=500)

@@ -420,6 +420,13 @@
               <input ref="segmentNiiImageInput" type="file" accept=".gz,.nii.gz" @change="updateSegmentationSelection" />
             </label>
             <label>
+              <span>图像类型</span>
+              <select v-model="selectedSegmentationModality" @change="loadSegmentationParts">
+                <option value="ct">CT</option>
+                <option value="mri">MRI</option>
+              </select>
+            </label>
+            <label>
               <span>分割部位</span>
               <select v-model="selectedSegmentationPart">
                 <option v-for="part in segmentationParts" :key="part.key" :value="part.key">
@@ -523,6 +530,10 @@
         <aside v-if="viewerMode === 'nii' && niiViewerItem" class="nii-label-toggles">
           <section class="nii-segmentation-panel">
             <h4>TotalSegmentator</h4>
+            <select v-model="selectedSegmentationModality" @change="loadSegmentationParts">
+              <option value="ct">CT</option>
+              <option value="mri">MRI</option>
+            </select>
             <select v-model="selectedSegmentationPart">
               <option v-for="part in segmentationParts" :key="part.key" :value="part.key">
                 {{ part.name }}
@@ -758,6 +769,7 @@ export default {
       niiSelectedLabels: [],
       segmentationSelectedImage: null,
       segmentationParts: [],
+      selectedSegmentationModality: "ct",
       segmentationDevices: [{ id: "cpu", type: "cpu", name: "CPU", label: "CPU" }],
       selectedSegmentationPart: "liver",
       selectedSegmentationDevice: "cpu",
@@ -1140,7 +1152,7 @@ export default {
       this.niiItems = data.items || [];
     },
     async loadSegmentationParts() {
-      const response = await fetch("/api/segmentation/totalsegmentator/parts");
+      const response = await fetch(`/api/segmentation/totalsegmentator/parts?modality=${encodeURIComponent(this.selectedSegmentationModality)}`);
       const data = await response.json();
       this.segmentationParts = data.parts || [];
       if (this.segmentationParts.length > 0 && !this.segmentationParts.some((part) => part.key === this.selectedSegmentationPart)) {
@@ -1256,7 +1268,11 @@ export default {
         const segmentResponse = await fetch(`/api/patients/nii/${encodeURIComponent(item.id)}/segment/jobs`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ part: this.selectedSegmentationPart, device: this.selectedSegmentationDevice }),
+          body: JSON.stringify({
+            part: this.selectedSegmentationPart,
+            device: this.selectedSegmentationDevice,
+            modality: this.selectedSegmentationModality,
+          }),
         });
         const segmentData = await segmentResponse.json();
         if (!segmentResponse.ok || segmentData.error) {
@@ -1340,7 +1356,11 @@ export default {
         const response = await fetch(`/api/patients/nii/${encodeURIComponent(this.niiViewerItem.id)}/segment`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ part: this.selectedSegmentationPart, device: this.selectedSegmentationDevice }),
+          body: JSON.stringify({
+            part: this.selectedSegmentationPart,
+            device: this.selectedSegmentationDevice,
+            modality: this.selectedSegmentationModality,
+          }),
         });
         const data = await response.json();
         if (!response.ok || data.error) {
